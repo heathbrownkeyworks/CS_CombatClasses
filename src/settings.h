@@ -1,308 +1,496 @@
 #pragma once
 
-#include "SimpleIni.h"
+#include "settings.h"
 
-namespace logger = SKSE::log;
+// Add ActorValue enum if it's not defined
+namespace AV {
+    enum ActorValue {
+        kMarksman = 8,
+        kAttackAngleMult = 96,
+        kAimOffset_V = 96 + 1,       // Adjust as needed based on your CommonLibSSE
+        kAimSightedDelay = 96 + 2,    // Adjust as needed
+        kCombatHealthRegenMult = 96 + 3  // Adjust as needed
+    };
+}
 
-class Settings {
+class CombatClassesManager {
 private:
-    static inline Settings* instance = nullptr;
-    CSimpleIniA ini;
-    std::unordered_map<std::string, bool> followersEnabled;
+    static inline CombatClassesManager* instance = nullptr;
     
-    // Default settings
-    float baseAccuracyBonus = 30.0f;
-    float attackAngleMult = 0.5f;
-    float aimOffsetV = 0.85f;
-    float aimSightedDelay = 0.1f;
-    bool autoApplyImprovements = true;
-    float bowAccuracyBonus = 20.0f;
-    float specialBowBonus = 15.0f;
-    float knockbackMagnitude = 1000.0f;
-    float knockbackInterval = 10.0f;
+    // Track actor state
+    struct ActorState {
+        bool improvementsApplied = false;
+        bool hasSpecialBowBonus = false;
+        bool swordKnockbackActive = false;
+        float originalMarksman = 0.0f;
+        float originalAttackAngleMult = 1.0f;
+        float originalAimOffsetV = 1.0f;
+        float originalAimSightedDelay = 0.25f;
+        float originalCombatHealthRegenMult = 1.0f;
+        RE::FormID equippedBowID = 0;
+        RE::FormID equippedSwordID = 0;
+        std::chrono::steady_clock::time_point lastKnockbackTime;
+    };
     
-    // Weapon FormIDs
-    std::unordered_map<std::string, RE::FormID> specialBows;
-    std::unordered_map<std::string, RE::FormID> specialSwords;
-
-    // Actor FormIDs - name to formID mapping for followers
-    std::unordered_map<std::string, RE::FormID> followers;
-
-    Settings() = default;
+    // Maps actor formIDs to their state
+    std::unordered_map<RE::FormID, ActorState> actorStates;
+    
+    CombatClassesManager() = default;
 
 public:
-    static Settings* GetSingleton() {
+    static CombatClassesManager* GetSingleton() {
         if (!instance) {
-            instance = new Settings();
+            instance = new CombatClassesManager();
         }
         return instance;
     }
-
-    bool LoadSettings() {
-        ini.SetUnicode();
+    
+    void Initialize() {
+        logger::info("Initializing Combat Classes Manager");
         
-        // Get the path to the settings file
-        auto configDir = SKSE::log::log_directory();
-        if (!configDir) {
-            logger::error("Failed to get config directory");
-            return false;
+        // Initialize for all followers that are already loaded
+        auto dataHandler = RE::TESDataHandler::GetSingleton();
+        if (!dataHandler) {
+            logger::error("Failed to get data handler");
+            return;
         }
-
-        auto configPath = *configDir / "CS_CombatClasses/Settings.ini";
         
-        // Load the settings file
-        SI_Error rc = ini.LoadFile(configPath.string().c_str());
-        if (rc < 0) {
-            // If file doesn't exist, create it with default values
-            logger::info("Settings file not found, creating with defaults");
-            SaveSettings();
-            return true;
-        }
-
-        // Load general settings
-        baseAccuracyBonus = static_cast<float>(ini.GetDoubleValue("General", "fBaseAccuracyBonus", 30.0));
-        attackAngleMult = static_cast<float>(ini.GetDoubleValue("General", "fAttackAngleMult", 0.5));
-        aimOffsetV = static_cast<float>(ini.GetDoubleValue("General", "fAimOffsetV", 0.85));
-        aimSightedDelay = static_cast<float>(ini.GetDoubleValue("General", "fAimSightedDelay", 0.1));
-        autoApplyImprovements = ini.GetBoolValue("General", "bAutoApplyImprovements", true);
-        bowAccuracyBonus = static_cast<float>(ini.GetDoubleValue("General", "fBowAccuracyBonus", 20.0));
-        specialBowBonus = static_cast<float>(ini.GetDoubleValue("General", "fSpecialBowBonus", 15.0));
-        knockbackMagnitude = static_cast<float>(ini.GetDoubleValue("General", "fKnockbackMagnitude", 1000.0));
-        knockbackInterval = static_cast<float>(ini.GetDoubleValue("General", "fKnockbackInterval", 10.0));
-
-        // Load follower settings
-        CSimpleIniA::TNamesDepend sections;
-        ini.GetAllSections(sections);
-        for (const auto& section : sections) {
-            std::string sectionName = section.pItem;
-            if (sectionName.find("Follower:") == 0) {
-                std::string followerName = sectionName.substr(9); // Remove "Follower:" prefix
-                std::string formIDStr = ini.GetValue(sectionName.c_str(), "FormID", "");
-                std::string pluginName = ini.GetValue(sectionName.c_str(), "Plugin", "Skyrim.esm");
-                std::string enabledStr = ini.GetValue(sectionName.c_str(), "Enabled", "true");
-                
-                if (!formIDStr.empty()) {
-                    try {
-                        uint32_t formID = std::stoul(formIDStr, nullptr, 16);
-                        auto* dataHandler = RE::TESDataHandler::GetSingleton();
-                        auto* form = dataHandler->LookupForm(formID, pluginName);
-                        if (form) {
-                            followers[followerName] = form->GetFormID();
-                            followersEnabled[followerName] = (enabledStr == "true");
+        const auto& settings = Settings::GetSingleton();
+        const auto& followers = settings->GetFollowers();
+        
+        for (const auto& [name, formID] : followers) {
+            if (settings->IsFollowerEnabled(formID)) {
+                auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
+                if (actor && actor->Is3DLoaded()) {
+                    logger::info("Initializing follower: {}", name);
+                    ApplyAccuracyImprovements(actor);
+                    
+                    // Check if they already have equipment
+                    auto rightHand = actor->GetEquippedObject(false);
+                    if (rightHand) {
+                        auto weapon = rightHand->As<RE::TESObjectWEAP>();
+                        if (weapon) {
+                            HandleWeaponEquipped(actor, weapon);
                         }
-                    } catch (const std::exception& e) {
-                        logger::error("Error parsing follower FormID: {}", e.what());
-                    }
-                }
-            } else if (sectionName.find("SpecialBow:") == 0) {
-                std::string bowName = sectionName.substr(11); // Remove "SpecialBow:" prefix
-                std::string formIDStr = ini.GetValue(sectionName.c_str(), "FormID", "");
-                std::string pluginName = ini.GetValue(sectionName.c_str(), "Plugin", "Skyrim.esm");
-                
-                if (!formIDStr.empty()) {
-                    try {
-                        uint32_t formID = std::stoul(formIDStr, nullptr, 16);
-                        auto* dataHandler = RE::TESDataHandler::GetSingleton();
-                        auto* form = dataHandler->LookupForm(formID, pluginName);
-                        if (form) {
-                            specialBows[bowName] = form->GetFormID();
-                        }
-                    } catch (const std::exception& e) {
-                        logger::error("Error parsing special bow FormID: {}", e.what());
-                    }
-                }
-            } else if (sectionName.find("SpecialSword:") == 0) {
-                std::string swordName = sectionName.substr(13); // Remove "SpecialSword:" prefix
-                std::string formIDStr = ini.GetValue(sectionName.c_str(), "FormID", "");
-                std::string pluginName = ini.GetValue(sectionName.c_str(), "Plugin", "Skyrim.esm");
-                
-                if (!formIDStr.empty()) {
-                    try {
-                        uint32_t formID = std::stoul(formIDStr, nullptr, 16);
-                        auto* dataHandler = RE::TESDataHandler::GetSingleton();
-                        auto* form = dataHandler->LookupForm(formID, pluginName);
-                        if (form) {
-                            specialSwords[swordName] = form->GetFormID();
-                        }
-                    } catch (const std::exception& e) {
-                        logger::error("Error parsing special sword FormID: {}", e.what());
                     }
                 }
             }
         }
-
-        logger::info("Settings loaded successfully");
-        return true;
     }
-
-    bool SaveSettings() {
-        // Set general settings
-        ini.SetDoubleValue("General", "fBaseAccuracyBonus", baseAccuracyBonus);
-        ini.SetDoubleValue("General", "fAttackAngleMult", attackAngleMult);
-        ini.SetDoubleValue("General", "fAimOffsetV", aimOffsetV);
-        ini.SetDoubleValue("General", "fAimSightedDelay", aimSightedDelay);
-        ini.SetBoolValue("General", "bAutoApplyImprovements", autoApplyImprovements);
-        ini.SetDoubleValue("General", "fBowAccuracyBonus", bowAccuracyBonus);
-        ini.SetDoubleValue("General", "fSpecialBowBonus", specialBowBonus);
-        ini.SetDoubleValue("General", "fKnockbackMagnitude", knockbackMagnitude);
-        ini.SetDoubleValue("General", "fKnockbackInterval", knockbackInterval);
-
-        // Add a default follower (Samandriel) if none exist
-        if (followers.empty()) {
-            std::string sectionName = "Follower:Samandriel";
-            ini.SetValue(sectionName.c_str(), "FormID", "14000", "FormID in hexadecimal");
-            ini.SetValue(sectionName.c_str(), "Plugin", "YourMod.esp", "Plugin name");
-            ini.SetValue(sectionName.c_str(), "Enabled", "true", "Enable/disable this follower");
-        } else {
-            // Save follower settings
-            for (const auto& [name, formID] : followers) {
-                std::string sectionName = "Follower:" + name;
-                
-                auto* form = RE::TESForm::LookupByID(formID);
-                if (form) {
-                    const auto* file = form->GetFile(0);
-                    std::string modName = file ? file->GetFilename() : std::string("Skyrim.esm");
-                    
-                    std::stringstream ss;
-                    ss << std::hex << std::uppercase << (formID & 0xFFFFFF);
-                    
-                    ini.SetValue(sectionName.c_str(), "FormID", ss.str().c_str());
-                    ini.SetValue(sectionName.c_str(), "Plugin", modName.c_str());
-                    ini.SetValue(sectionName.c_str(), "Enabled", followersEnabled[name] ? "true" : "false");
-                }
-            }
-        }
-
-        // Add default special weapons if none exist
-        if (specialBows.empty()) {
-            std::string sectionName = "SpecialBow:Truthseeker";
-            ini.SetValue(sectionName.c_str(), "FormID", "14001", "FormID in hexadecimal");
-            ini.SetValue(sectionName.c_str(), "Plugin", "YourMod.esp", "Plugin name");
-        } else {
-            // Save special bow settings
-            for (const auto& [name, formID] : specialBows) {
-                std::string sectionName = "SpecialBow:" + name;
-                
-                auto* form = RE::TESForm::LookupByID(formID);
-                if (form) {
-                    const auto* file = form->GetFile(0);
-                    std::string modName = file ? file->GetFilename() : std::string("Skyrim.esm");
-                    
-                    std::stringstream ss;
-                    ss << std::hex << std::uppercase << (formID & 0xFFFFFF);
-                    
-                    ini.SetValue(sectionName.c_str(), "FormID", ss.str().c_str());
-                    ini.SetValue(sectionName.c_str(), "Plugin", modName.c_str());
-                }
-            }
-        }
-
-        if (specialSwords.empty()) {
-            std::string sectionName = "SpecialSword:Sevenfold";
-            ini.SetValue(sectionName.c_str(), "FormID", "14002", "FormID in hexadecimal");
-            ini.SetValue(sectionName.c_str(), "Plugin", "YourMod.esp", "Plugin name");
-        } else {
-            // Save special sword settings
-            for (const auto& [name, formID] : specialSwords) {
-                std::string sectionName = "SpecialSword:" + name;
-                
-                auto* form = RE::TESForm::LookupByID(formID);
-                if (form) {
-                    const auto* file = form->GetFile(0);
-                    std::string modName = file ? file->GetFilename() : std::string("Skyrim.esm");
-                    
-                    std::stringstream ss;
-                    ss << std::hex << std::uppercase << (formID & 0xFFFFFF);
-                    
-                    ini.SetValue(sectionName.c_str(), "FormID", ss.str().c_str());
-                    ini.SetValue(sectionName.c_str(), "Plugin", modName.c_str());
-                }
-            }
-        }
-
-        // Get the path to the settings file
-        auto configDir = SKSE::log::log_directory();
-        if (!configDir) {
-            logger::error("Failed to get config directory");
-            return false;
-        }
-
-        auto configPath = *configDir / "CS_CombatClasses/Settings.ini";
+    
+    void OnActorEquip(RE::Actor* actor, RE::TESBoundObject* object) {
+        if (!actor || !object) return;
         
-        // Create directories if they don't exist
-        std::filesystem::create_directories(configPath.parent_path());
+        auto settings = Settings::GetSingleton();
+        if (!settings->IsFollower(actor->GetFormID())) return;
         
-        // Save the settings file
-        SI_Error rc = ini.SaveFile(configPath.string().c_str());
-        if (rc < 0) {
-            logger::error("Failed to save settings file: {}", rc);
-            return false;
+        auto weapon = object->As<RE::TESObjectWEAP>();
+        if (weapon) {
+            HandleWeaponEquipped(actor, weapon);
         }
-
-        logger::info("Settings saved successfully");
-        return true;
     }
-
-    // Getters
-    float GetBaseAccuracyBonus() const { return baseAccuracyBonus; }
-    float GetAttackAngleMult() const { return attackAngleMult; }
-    float GetAimOffsetV() const { return aimOffsetV; }
-    float GetAimSightedDelay() const { return aimSightedDelay; }
-    bool GetAutoApplyImprovements() const { return autoApplyImprovements; }
-    float GetBowAccuracyBonus() const { return bowAccuracyBonus; }
-    float GetSpecialBowBonus() const { return specialBowBonus; }
-    float GetKnockbackMagnitude() const { return knockbackMagnitude; }
-    float GetKnockbackInterval() const { return knockbackInterval; }
-
-    bool IsFollowerEnabled(RE::FormID formID) const {
-        for (const auto& [name, id] : followers) {
-            if (id == formID) {
-                auto it = followersEnabled.find(name);
-                if (it != followersEnabled.end()) {
-                    return it->second;
+    
+    void OnActorUnequip(RE::Actor* actor, RE::TESBoundObject* object) {
+        if (!actor || !object) return;
+        
+        auto settings = Settings::GetSingleton();
+        if (!settings->IsFollower(actor->GetFormID())) return;
+        
+        auto weapon = object->As<RE::TESObjectWEAP>();
+        if (weapon) {
+            HandleWeaponUnequipped(actor, weapon);
+        }
+    }
+    
+    void OnActorLoad(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        if (settings->IsFollower(actor->GetFormID()) && settings->IsFollowerEnabled(actor->GetFormID())) {
+            logger::info("Follower loaded: {}", actor->GetName());
+            
+            if (settings->GetAutoApplyImprovements()) {
+                ApplyAccuracyImprovements(actor);
+            }
+        }
+    }
+    
+    void OnActorUnload(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        if (settings->IsFollower(actor->GetFormID())) {
+            logger::info("Follower unloaded: {}", actor->GetName());
+            
+            RemoveAccuracyImprovements(actor);
+            RemoveBowBonus(actor);
+            RemoveSpecialBowBonus(actor);
+            StopSwordKnockback(actor);
+            
+            // Remove from tracking
+            actorStates.erase(actor->GetFormID());
+        }
+    }
+    
+    void Update(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        if (!settings->IsFollower(actor->GetFormID()) || !settings->IsFollowerEnabled(actor->GetFormID())) {
+            return;
+        }
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        if (it == actorStates.end()) {
+            return;
+        }
+        
+        auto& state = it->second;
+        
+        // Handle sword knockback
+        if (state.swordKnockbackActive && state.equippedSwordID != 0) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - state.lastKnockbackTime).count();
+            
+            if (elapsed >= settings->GetKnockbackInterval()) {
+                // Time to do knockback
+                HandleSwordKnockback(actor);
+                state.lastKnockbackTime = now;
+            }
+        }
+    }
+    
+private:
+    void HandleWeaponEquipped(RE::Actor* actor, RE::TESObjectWEAP* weapon) {
+        auto settings = Settings::GetSingleton();
+        auto weaponID = weapon->GetFormID();
+        auto actorID = actor->GetFormID();
+        
+        // Get or create actor state
+        auto& state = actorStates[actorID];
+        
+        // Check weapon type
+        if (weapon->GetWeaponType() == RE::WEAPON_TYPE::kBow) {
+            // Apply bow bonus
+            ApplyBowBonus(actor);
+            state.equippedBowID = weaponID;
+            
+            // Check if it's a special bow
+            if (settings->IsSpecialBow(weaponID)) {
+                ApplySpecialBowBonus(actor);
+                
+                // Notify player if the follower is player's follower
+                if (actor->IsPlayerTeammate()) {
+                    auto name = weapon->GetName();
+                    RE::DebugNotification(fmt::format("{}'s Improved Aim Activated", name).c_str());
                 }
-                return true; // Default to enabled if not specified
+            }
+        } else if (settings->IsSpecialSword(weaponID)) {
+            // It's a special sword, start the knockback effect
+            StartSwordKnockback(actor);
+            state.equippedSwordID = weaponID;
+            
+            // Notify player if the follower is player's follower
+            if (actor->IsPlayerTeammate()) {
+                auto name = weapon->GetName();
+                RE::DebugNotification(fmt::format("{}'s Knockback Power Activated", name).c_str());
             }
         }
-        return false;
     }
-
-    bool IsFollower(RE::FormID formID) const {
-        for (const auto& [name, id] : followers) {
-            if (id == formID) {
-                return true;
+    
+    void HandleWeaponUnequipped(RE::Actor* actor, RE::TESObjectWEAP* weapon) {
+        auto settings = Settings::GetSingleton();
+        auto weaponID = weapon->GetFormID();
+        auto actorID = actor->GetFormID();
+        
+        auto it = actorStates.find(actorID);
+        if (it == actorStates.end()) {
+            return;
+        }
+        
+        auto& state = it->second;
+        
+        // Check weapon type
+        if (weapon->GetWeaponType() == RE::WEAPON_TYPE::kBow) {
+            // Remove bow bonuses
+            RemoveBowBonus(actor);
+            
+            // Check if it's the special bow
+            if (settings->IsSpecialBow(weaponID)) {
+                RemoveSpecialBowBonus(actor);
+            }
+            
+            state.equippedBowID = 0;
+        } else if (settings->IsSpecialSword(weaponID)) {
+            // It's the special sword, stop the knockback effect
+            StopSwordKnockback(actor);
+            state.equippedSwordID = 0;
+        }
+    }
+    
+    void ApplyAccuracyImprovements(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        
+        // If already applied, return
+        if (it != actorStates.end() && it->second.improvementsApplied) {
+            return;
+        }
+        
+        // Get settings
+        auto settings = Settings::GetSingleton();
+        
+        // Create state for this actor if it doesn't exist
+        auto& state = actorStates[actorID];
+        
+        // Store original values
+        state.originalMarksman = actor->GetActorValueByName("Marksman");
+        state.originalAttackAngleMult = actor->GetActorValueByName("attackAngleMult");
+        state.originalAimOffsetV = actor->GetActorValueByName("aimOffsetV");
+        state.originalAimSightedDelay = actor->GetActorValueByName("aimSightedDelay");
+        state.originalCombatHealthRegenMult = actor->GetActorValueByName("combatHealthRegenMult");
+        
+        // Apply improvements
+        if (actor->GetActorValueByName("Marksman") < state.originalMarksman + settings->GetBaseAccuracyBonus()) {
+            actor->SetActorValueByName("Marksman", state.originalMarksman + settings->GetBaseAccuracyBonus());
+        }
+        
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult());
+        actor->SetActorValueByName("aimOffsetV", settings->GetAimOffsetV());
+        actor->SetActorValueByName("aimSightedDelay", settings->GetAimSightedDelay());
+        actor->SetActorValueByName("combatHealthRegenMult", 2.0f);
+        
+        state.improvementsApplied = true;
+        
+        // Notify player if the follower is player's follower
+        if (actor->IsPlayerTeammate()) {
+            RE::DebugNotification(fmt::format("{}'s Accuracy Improvements Applied", actor->GetName()).c_str());
+        }
+        
+        logger::info("Applied accuracy improvements to {}", actor->GetName());
+    }
+    
+    void RemoveAccuracyImprovements(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        
+        // If not applied, return
+        if (it == actorStates.end() || !it->second.improvementsApplied) {
+            return;
+        }
+        
+        auto& state = it->second;
+        
+        // Restore original values
+        actor->SetActorValueByName("Marksman", state.originalMarksman);
+        actor->SetActorValueByName("attackAngleMult", state.originalAttackAngleMult);
+        actor->SetActorValueByName("aimOffsetV", state.originalAimOffsetV);
+        actor->SetActorValueByName("aimSightedDelay", state.originalAimSightedDelay);
+        actor->SetActorValueByName("combatHealthRegenMult", state.originalCombatHealthRegenMult);
+        
+        state.improvementsApplied = false;
+        
+        logger::info("Removed accuracy improvements from {}", actor->GetName());
+    }
+    
+    void ApplyBowBonus(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        actor->ModActorValueByName("Marksman", settings->GetBowAccuracyBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.8f);
+        
+        logger::info("Applied bow bonus to {}", actor->GetName());
+    }
+    
+    void RemoveBowBonus(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        actor->ModActorValueByName("Marksman", -settings->GetBowAccuracyBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult());
+        
+        logger::info("Removed bow bonus from {}", actor->GetName());
+    }
+    
+    void ApplySpecialBowBonus(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        
+        // If already applied, return
+        if (it != actorStates.end() && it->second.hasSpecialBowBonus) {
+            return;
+        }
+        
+        auto settings = Settings::GetSingleton();
+        actor->ModActorValueByName("Marksman", settings->GetSpecialBowBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.6f);
+        
+        // Update state
+        auto& state = actorStates[actorID];
+        state.hasSpecialBowBonus = true;
+        
+        logger::info("Applied special bow bonus to {}", actor->GetName());
+    }
+    
+    void RemoveSpecialBowBonus(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        
+        // If not applied, return
+        if (it == actorStates.end() || !it->second.hasSpecialBowBonus) {
+            return;
+        }
+        
+        auto settings = Settings::GetSingleton();
+        actor->ModActorValueByName("Marksman", -settings->GetSpecialBowBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.8f);
+        
+        // Update state
+        it->second.hasSpecialBowBonus = false;
+        
+        logger::info("Removed special bow bonus from {}", actor->GetName());
+    }
+    
+    void StartSwordKnockback(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto& state = actorStates[actorID];
+        
+        // If already active, return
+        if (state.swordKnockbackActive) {
+            return;
+        }
+        
+        state.swordKnockbackActive = true;
+        state.lastKnockbackTime = std::chrono::steady_clock::now();
+        
+        logger::info("Started sword knockback for {}", actor->GetName());
+    }
+    
+    void StopSwordKnockback(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto actorID = actor->GetFormID();
+        auto it = actorStates.find(actorID);
+        
+        if (it != actorStates.end()) {
+            it->second.swordKnockbackActive = false;
+            logger::info("Stopped sword knockback for {}", actor->GetName());
+        }
+    }
+    
+    void HandleSwordKnockback(RE::Actor* actor) {
+        if (!actor) return;
+        
+        auto settings = Settings::GetSingleton();
+        
+        // Find nearest enemy
+        auto nearestEnemy = GetNearestEnemy(actor);
+        if (nearestEnemy && !nearestEnemy->IsDead() && nearestEnemy->IsHostileToActor(actor)) {
+            // Apply knockback effect - using Skyrim's native PushActorAway function
+            // We need to access it through the game's script system
+            RE::TESForm* gameObj = RE::TESForm::LookupByID(0x14);  // Game's formID
+            if (gameObj) {
+                auto vm = SKSE::GetPapyrusInterface()->GetVirtualMachine();
+                if (vm) {
+                    // Create argument list
+                    RE::TESObjectREFR* source = actor;
+                    RE::TESObjectREFR* target = nearestEnemy;
+                    float magnitude = settings->GetKnockbackMagnitude();
+                    
+                    RE::BSFixedString funcName("PushActorAway");
+                    RE::BSFixedString objName("Game");
+                    
+                    // Call the function
+                    std::vector<RE::BSScript::Variable> args;
+                    
+                    RE::BSScript::Variable targetVar;
+                    targetVar.SetObject(target);
+                    args.push_back(targetVar);
+                    
+                    RE::BSScript::Variable sourceVar;
+                    sourceVar.SetObject(source);
+                    args.push_back(sourceVar);
+                    
+                    RE::BSScript::Variable magVar;
+                    magVar.SetFloat(magnitude);
+                    args.push_back(magVar);
+                    
+                    auto nullHandle = RE::BSScript::IObjectHandlePolicy::InvalidHandle;
+                    
+                    vm->SendEvent(nullHandle, objName.c_str(), funcName.c_str(), args);
+                }
+            }
+            
+            // Notify player if the follower is player's teammate
+            if (actor->IsPlayerTeammate()) {
+                auto weapon = actor->GetEquippedObject(false);
+                if (weapon) {
+                    auto name = weapon->GetName();
+                    RE::DebugNotification(fmt::format("{} unleashes a powerful knockback!", name).c_str());
+                }
+            }
+            
+            logger::info("{} performed knockback on {}", actor->GetName(), nearestEnemy->GetName());
+        }
+    }
+    
+    RE::Actor* GetNearestEnemy(RE::Actor* actor) {
+        if (!actor) return nullptr;
+        
+        std::vector<RE::Actor*> combatTargets;
+        
+        // Add player's combat target if relevant
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (player) {
+            auto target = player->GetActorRuntimeData().currentCombatTarget.get();
+            if (target && !target->IsDead() && target->IsHostileToActor(actor)) {
+                combatTargets.push_back(target.get());
             }
         }
-        return false;
-    }
-
-    bool IsSpecialBow(RE::FormID formID) const {
-        for (const auto& [name, id] : specialBows) {
-            if (id == formID) {
-                return true;
+        
+        // Add actor's combat target
+        auto targetPtr = actor->GetActorRuntimeData().currentCombatTarget.get();
+        if (targetPtr && !targetPtr->IsDead()) {
+            // Check if already in the list
+            bool found = false;
+            for (auto target : combatTargets) {
+                if (target == targetPtr.get()) {
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                combatTargets.push_back(targetPtr.get());
             }
         }
-        return false;
-    }
-
-    bool IsSpecialSword(RE::FormID formID) const {
-        for (const auto& [name, id] : specialSwords) {
-            if (id == formID) {
-                return true;
+        
+        // Find nearest from the targets
+        RE::Actor* nearestActor = nullptr;
+        float nearestDistance = 99999.0f;
+        
+        for (auto target : combatTargets) {
+            if (target) {
+                float currentDistance = actor->GetPosition().GetDistance(target->GetPosition());
+                if (currentDistance < nearestDistance) {
+                    nearestDistance = currentDistance;
+                    nearestActor = target;
+                }
             }
         }
-        return false;
-    }
-
-    const std::unordered_map<std::string, RE::FormID>& GetFollowers() const {
-        return followers;
-    }
-
-    const std::unordered_map<std::string, RE::FormID>& GetSpecialBows() const {
-        return specialBows;
-    }
-
-    const std::unordered_map<std::string, RE::FormID>& GetSpecialSwords() const {
-        return specialSwords;
+        
+        return nearestActor;
     }
 };

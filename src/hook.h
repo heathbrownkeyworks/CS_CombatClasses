@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_set>
 #include "combat_classes.h"
 #include <chrono>
 
@@ -136,7 +137,7 @@ public:
     }
     
     void ProcessAll() {
-        for (auto formID : registeredActors) {
+        for (const RE::FormID& formID : registeredActors) {
             auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
             if (actor && actor->Is3DLoaded()) {
                 CombatClassesManager::GetSingleton()->Update(actor);

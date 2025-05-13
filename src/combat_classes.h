@@ -247,21 +247,21 @@ private:
         auto& state = actorStates[actorID];
         
         // Store original values
-        state.originalMarksman = actor->GetActorValue(static_cast<RE::ActorValue>(AV::kMarksman));
-        state.originalAttackAngleMult = actor->GetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult));
-        state.originalAimOffsetV = actor->GetActorValue(static_cast<RE::ActorValue>(AV::kAimOffset_V));
-        state.originalAimSightedDelay = actor->GetActorValue(static_cast<RE::ActorValue>(AV::kAimSightedDelay));
-        state.originalCombatHealthRegenMult = actor->GetActorValue(static_cast<RE::ActorValue>(AV::kCombatHealthRegenMult));
+        state.originalMarksman = actor->GetActorValueByName("Marksman");
+        state.originalAttackAngleMult = actor->GetActorValueByName("attackAngleMult");
+        state.originalAimOffsetV = actor->GetActorValueByName("aimOffsetV");
+        state.originalAimSightedDelay = actor->GetActorValueByName("aimSightedDelay");
+        state.originalCombatHealthRegenMult = actor->GetActorValueByName("combatHealthRegenMult");
         
         // Apply improvements
-        if (actor->GetActorValue(static_cast<RE::ActorValue>(AV::kMarksman)) < state.originalMarksman + settings->GetBaseAccuracyBonus()) {
-            actor->SetActorValue(static_cast<RE::ActorValue>(AV::kMarksman), state.originalMarksman + settings->GetBaseAccuracyBonus());
+        if (actor->GetActorValueByName("Marksman") < state.originalMarksman + settings->GetBaseAccuracyBonus()) {
+            actor->SetActorValueByName("Marksman", state.originalMarksman + settings->GetBaseAccuracyBonus());
         }
         
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), settings->GetAttackAngleMult());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAimOffset_V), settings->GetAimOffsetV());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAimSightedDelay), settings->GetAimSightedDelay());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kCombatHealthRegenMult), 2.0f);
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult());
+        actor->SetActorValueByName("aimOffsetV", settings->GetAimOffsetV());
+        actor->SetActorValueByName("aimSightedDelay", settings->GetAimSightedDelay());
+        actor->SetActorValueByName("combatHealthRegenMult", 2.0f);
         
         state.improvementsApplied = true;
         
@@ -287,11 +287,11 @@ private:
         auto& state = it->second;
         
         // Restore original values
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kMarksman), state.originalMarksman);
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), state.originalAttackAngleMult);
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAimOffset_V), state.originalAimOffsetV);
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAimSightedDelay), state.originalAimSightedDelay);
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kCombatHealthRegenMult), state.originalCombatHealthRegenMult);
+        actor->SetActorValueByName("Marksman", state.originalMarksman);
+        actor->SetActorValueByName("attackAngleMult", state.originalAttackAngleMult);
+        actor->SetActorValueByName("aimOffsetV", state.originalAimOffsetV);
+        actor->SetActorValueByName("aimSightedDelay", state.originalAimSightedDelay);
+        actor->SetActorValueByName("combatHealthRegenMult", state.originalCombatHealthRegenMult);
         
         state.improvementsApplied = false;
         
@@ -302,8 +302,8 @@ private:
         if (!actor) return;
         
         auto settings = Settings::GetSingleton();
-        actor->ModActorValue(static_cast<RE::ActorValue>(AV::kMarksman), settings->GetBowAccuracyBonus());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), settings->GetAttackAngleMult() * 0.8f);
+        actor->ModActorValueByName("Marksman", settings->GetBowAccuracyBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.8f);
         
         logger::info("Applied bow bonus to {}", actor->GetName());
     }
@@ -312,8 +312,8 @@ private:
         if (!actor) return;
         
         auto settings = Settings::GetSingleton();
-        actor->ModActorValue(static_cast<RE::ActorValue>(AV::kMarksman), -settings->GetBowAccuracyBonus());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), settings->GetAttackAngleMult());
+        actor->ModActorValueByName("Marksman", -settings->GetBowAccuracyBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult());
         
         logger::info("Removed bow bonus from {}", actor->GetName());
     }
@@ -330,8 +330,8 @@ private:
         }
         
         auto settings = Settings::GetSingleton();
-        actor->ModActorValue(static_cast<RE::ActorValue>(AV::kMarksman), settings->GetSpecialBowBonus());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), settings->GetAttackAngleMult() * 0.6f);
+        actor->ModActorValueByName("Marksman", settings->GetSpecialBowBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.6f);
         
         // Update state
         auto& state = actorStates[actorID];
@@ -352,8 +352,8 @@ private:
         }
         
         auto settings = Settings::GetSingleton();
-        actor->ModActorValue(static_cast<RE::ActorValue>(AV::kMarksman), -settings->GetSpecialBowBonus());
-        actor->SetActorValue(static_cast<RE::ActorValue>(AV::kAttackAngleMult), settings->GetAttackAngleMult() * 0.8f);
+        actor->ModActorValueByName("Marksman", -settings->GetSpecialBowBonus());
+        actor->SetActorValueByName("attackAngleMult", settings->GetAttackAngleMult() * 0.8f);
         
         // Update state
         it->second.hasSpecialBowBonus = false;
@@ -398,12 +398,39 @@ private:
         // Find nearest enemy
         auto nearestEnemy = GetNearestEnemy(actor);
         if (nearestEnemy && !nearestEnemy->IsDead() && nearestEnemy->IsHostileToActor(actor)) {
-            // Apply knockback effect - using papyrus functions through SKSE
-            auto papyrusVM = SKSE::GetPapyrusInterface()->GetVirtualMachine();
-            if (papyrusVM) {
-                auto argsHolder = RE::MakeFunctionArguments(std::move(nearestEnemy), std::move(actor), 
-                                                           settings->GetKnockbackMagnitude());
-                papyrusVM->DispatchMethodCall(RE::Game::GetGameObject(), "PushActorAway", argsHolder);
+            // Apply knockback effect - using Skyrim's native PushActorAway function
+            // We need to access it through the game's script system
+            RE::TESForm* gameObj = RE::TESForm::LookupByID(0x14);  // Game's formID
+            if (gameObj) {
+                auto vm = SKSE::GetPapyrusInterface()->GetVirtualMachine();
+                if (vm) {
+                    // Create argument list
+                    RE::TESObjectREFR* source = actor;
+                    RE::TESObjectREFR* target = nearestEnemy;
+                    float magnitude = settings->GetKnockbackMagnitude();
+                    
+                    RE::BSFixedString funcName("PushActorAway");
+                    RE::BSFixedString objName("Game");
+                    
+                    // Call the function
+                    std::vector<RE::BSScript::Variable> args;
+                    
+                    RE::BSScript::Variable targetVar;
+                    targetVar.SetObject(target);
+                    args.push_back(targetVar);
+                    
+                    RE::BSScript::Variable sourceVar;
+                    sourceVar.SetObject(source);
+                    args.push_back(sourceVar);
+                    
+                    RE::BSScript::Variable magVar;
+                    magVar.SetFloat(magnitude);
+                    args.push_back(magVar);
+                    
+                    auto nullHandle = RE::BSScript::IObjectHandlePolicy::InvalidHandle;
+                    
+                    vm->SendEvent(nullHandle, objName.c_str(), funcName.c_str(), args);
+                }
             }
             
             // Notify player if the follower is player's teammate
