@@ -92,11 +92,21 @@ public:
 };
 
 // SKSE Task that is called periodically
-class PeriodicUpdateTask : public SKSE::RegistrationSet<RE::FormID> {
+class PeriodicUpdateTask {
+private:
+    static inline PeriodicUpdateTask* instance = nullptr;
+    
+    PeriodicUpdateTask() = default;
+    
+    // Handler for registered actors
+    std::unordered_set<RE::FormID> registeredActors;
+
 public:
     static PeriodicUpdateTask* GetSingleton() {
-        static PeriodicUpdateTask singleton;
-        return &singleton;
+        if (!instance) {
+            instance = new PeriodicUpdateTask();
+        }
+        return instance;
     }
 
     static void Register() {
@@ -105,35 +115,41 @@ public:
         const auto& followers = Settings::GetSingleton()->GetFollowers();
         for (const auto& [name, formID] : followers) {
             if (Settings::GetSingleton()->IsFollowerEnabled(formID)) {
-                task->Register(formID);
+                task->RegisterActor(formID);
             }
         }
         
         // Schedule the first update
-        SKSE::GetTaskInterface()->AddTask([]() {
-            PeriodicUpdateTask::GetSingleton()->ProcessAll();
+        SKSE::GetTaskInterface()->AddTask([task]() {
+            task->ProcessAll();
         });
         
         logger::info("Registered periodic update task");
     }
     
+    void RegisterActor(RE::FormID formID) {
+        registeredActors.insert(formID);
+    }
+    
+    void UnregisterActor(RE::FormID formID) {
+        registeredActors.erase(formID);
+    }
+    
     void ProcessAll() {
-        ForEachActorInRange([](RE::FormID formID) {
+        for (auto formID : registeredActors) {
             auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
             if (actor && actor->Is3DLoaded()) {
                 CombatClassesManager::GetSingleton()->Update(actor);
             }
-        });
+        }
         
         // Schedule the next update
-        SKSE::GetTaskInterface()->AddTask([]() {
-            PeriodicUpdateTask::GetSingleton()->ProcessAll();
-        }, 500ms);
-    }
-    
-    template <typename Func>
-    void ForEachActorInRange(Func&& func) {
-        ForEach(std::forward<Func>(func));
+        auto taskInterface = SKSE::GetTaskInterface();
+        if (taskInterface) {
+            taskInterface->AddTask([this]() {
+                this->ProcessAll();
+            });
+        }
     }
 };
 
@@ -159,7 +175,7 @@ public:
         auto actor = RE::TESForm::LookupByID<RE::Actor>(event->formID);
         if (actor) {
             CombatClassesManager::GetSingleton()->OnActorUnload(actor);
-            PeriodicUpdateTask::GetSingleton()->Unregister(event->formID);
+            PeriodicUpdateTask::GetSingleton()->UnregisterActor(event->formID);
         }
         
         return RE::BSEventNotifyControl::kContinue;
@@ -208,7 +224,7 @@ public:
                     
                     // Register for periodic updates if this is a follower
                     if (Settings::GetSingleton()->IsFollower(actor->GetFormID())) {
-                        PeriodicUpdateTask::GetSingleton()->Register(actor->GetFormID());
+                        PeriodicUpdateTask::GetSingleton()->RegisterActor(actor->GetFormID());
                     }
                 }
             }
